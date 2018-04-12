@@ -1,6 +1,8 @@
 package arrow.fold
 
+import arrow.common.utils.KnownException
 import arrow.common.utils.fullName
+import arrow.common.utils.removeBackticks
 import me.eugeniomarletti.kotlin.metadata.escapedClassName
 import java.io.File
 
@@ -23,7 +25,7 @@ class AutoFoldFileGenerator(
       val functionTypeParams = functionTypeParams(annotatedFold.typeParams, returnType)
 
       """inline fun $functionTypeParams $sourceClassName$sumTypeParams.fold(
-                |${params(targets, returnType)}
+                |${params(targets, returnType, annotatedFold)}
                 |): $returnType = when (this) {
                 |${patternMatching(targets)}
                 |}
@@ -34,8 +36,18 @@ class AutoFoldFileGenerator(
     if (params.isNotEmpty()) params.joinToString(prefix = "<", postfix = ">")
     else ""
 
-  fun params(variants: List<Variant>, returnType: String): String = variants.joinToString(transform = { variant ->
-    "        crossinline ${variant.simpleName.decapitalize()}: (${variant.fullName.escapedClassName}${typeParams(variant.typeParams)}) -> $returnType"
+  fun params(variants: List<Variant>, returnType: String,annotatedFold: AnnotatedFold): String = variants.joinToString(transform = { variant ->
+    if (variant.typeParams.size > annotatedFold.typeParams.size) throw KnownException(
+      """
+        |
+        | @autofold cannot create a fold method for sealed class ${annotatedFold.classData.fullName.escapedClassName.removeBackticks()}
+        | sealed class ${annotatedFold.classData.fullName.escapedClassName.removeBackticks()}${typeParams(annotatedFold.typeParams)}
+        | ${" ".repeat("sealed class ${annotatedFold.classData.fullName.escapedClassName.removeBackticks()}".length)} ^ contains less generic information than variant
+        |
+        | ${variant.fullName.escapedClassName.removeBackticks()}${typeParams(variant.typeParams)}
+        | ${" ".repeat(variant.fullName.escapedClassName.removeBackticks().length)} ^
+        """.trimMargin(), annotatedFold.type)
+    else "        crossinline ${variant.simpleName.decapitalize()}: (${variant.fullName.escapedClassName}${typeParams(variant.typeParams)}) -> $returnType"
   }, separator = ",\n")
 
   fun patternMatching(variants: List<Variant>): String = variants.joinToString(transform = { variant ->
@@ -43,7 +55,7 @@ class AutoFoldFileGenerator(
   }, separator = "\n")
 
   fun functionTypeParams(params: List<String>, returnType: String): String =
-    if (params.isEmpty()) ""
+    if (params.isEmpty()) "<$returnType>"
     else params.joinToString(prefix = "<", postfix = ", $returnType>")
 
   fun getFoldType(params: List<String>): String {
@@ -52,7 +64,7 @@ class AutoFoldFileGenerator(
       else it.toString()
     }
 
-    return check(params.firstOrNull() ?: "", params.drop(1))
+    return if (params.isNotEmpty()) check(params.first(), params.drop(1)) else "A"
   }
 
   fun fileHeader(packageName: String): String =
