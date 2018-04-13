@@ -1,10 +1,16 @@
 package arrow.fold
 
+import arrow.Kind
+import arrow.core.*
+import arrow.data.*
+import arrow.typeclasses.*
+
+import arrow.common.messager.logE
 import com.google.auto.service.AutoService
 import arrow.common.utils.AbstractProcessor
 import arrow.common.utils.asClassOrPackageDataWrapper
 import arrow.common.utils.isSealed
-import arrow.common.utils.knownError
+
 import me.eugeniomarletti.kotlin.metadata.KotlinClassMetadata
 import me.eugeniomarletti.kotlin.metadata.kotlinMetadata
 import java.io.File
@@ -15,12 +21,10 @@ import javax.lang.model.element.TypeElement
 import javax.lang.model.element.TypeParameterElement
 
 @AutoService(Processor::class)
-class AutoFoldProcessor : AbstractProcessor() {
+class AutoFoldProcessor : AbstractProcessor(), MonadError<EitherPartialOf<GenerationError>, GenerationError> by Either.monadError() /*, Traverse<ForListK> by ListK.traverse()*/ {
 
-  private val annotatedList = mutableListOf<AnnotatedFold>()
-
+  private val annotatedList = mutableListOf<Either<GenerationError, AnnotatedFold>>()
   override fun getSupportedSourceVersion(): SourceVersion = SourceVersion.latestSupported()
-
   override fun getSupportedAnnotationTypes(): Set<String> = setOf(foldAnnotationClass.canonicalName)
 
   /**
@@ -49,16 +53,25 @@ class AutoFoldProcessor : AbstractProcessor() {
                     elementUtils.getTypeElement(it).typeParameters.map(TypeParameterElement::toString),
                     it.substringAfterLast("."))
                 }
-            )
+            ).right()
           }
 
-          else -> knownError("Generation of fold is only supported for sealed classes.")
+          else -> GenerationError("Generation of fold is only supported for sealed classes.", element).left()
         }
       }
 
     if (roundEnv.processingOver()) {
       val generatedDir = File(this.generatedDir!!, foldAnnotationClass.simpleName).also { it.mkdirs() }
-      AutoFoldFileGenerator(annotatedList, generatedDir).generate()
+
+      annotatedList.k().traverse(Either.applicative(), ::identity)
+        .flatMap { folds: List<AnnotatedFold> ->
+          folds.map(::processAutoFoldElement).k().traverse(Either.applicative(), ::identity)
+        }.fix().fold(
+          { error: GenerationError -> logE(error.message, error.element) },
+          { results: List<AutoFoldResult> ->
+            results.forEach { (_, name, content) -> File(generatedDir, name).writeText(content) }
+          }
+        )
     }
   }
 
